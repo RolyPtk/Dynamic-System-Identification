@@ -1,0 +1,221 @@
+%% Measured system values in the laboratory, Steady-State Characteristic and Linear Fit
+clc; clear; close all;
+
+%% Load measurement data
+data2 = load('ic2data.mat');
+t2 = data2.ic2data(:,1);
+u2 = data2.ic2data(:,2); % blower input
+y2 = data2.ic2data(:,3); % ball position
+
+figure(1); hold on;
+plot(t2, u2, t2, y2);
+title('Raw measurement');
+xlabel('Time (s)');
+ylabel('Signal');
+legend('Blower Power (u)','Ball Position (y)');
+grid on;
+
+% steady-state means
+x = [132 237 330 456 570 639 733 822 886 976 1096 1196 1269 1346 1418 1507 1577 1653 1746 1831 1963 2052 2149 2254 2354 2460 2592 2674 2766 2879 2971 3025 3112 3188 3269 3346 3440 3534 3629 3778 3922];
+means = zeros(length(x),1);
+
+means(1) = mean(y2(1:x(1)));
+for i = 2:length(x)
+    start_index = x(i-1) + 1;
+    end_index = x(i);
+    means(i) = mean(y2(start_index:end_index));
+end
+
+start_index = 1;
+figure(1); hold on;
+for i = 1:length(x)
+    end_index = x(i);
+    time_interval = t2(start_index:end_index);
+    plot(time_interval, ones(size(time_interval))*means(i),'k--','LineWidth',2);
+    start_index = end_index + 1;
+end
+legend('Ball Position (y)','Blower Power (u)','Calculated Mean');
+
+output =timeseries([u2 y2],t2);
+step_input = timeseries(u2,t2);
+%% Linear fit of steady-state characteristic
+u_means = zeros(length(x),1);
+u_means(1) = mean(u2(1:x(1)));
+for i = 2:length(x)
+    start_index = x(i-1) + 1;
+    end_index = x(i);
+    u_means(i) = mean(u2(start_index:end_index));
+end
+
+p = polyfit(u_means, means, 1);
+u_fit = linspace(min(u_means), max(u_means), 100);
+y_fit = polyval(p, u_fit);
+
+x1 = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+y1 = [45.8577, 64.328, 87.2762, 132.815, 162.742, 190.611, 205.485, 221.836, 209.841, 202.32, 185.752 ];
+x12 = [100, 90, 80, 70, 59, 40, 30, 21, 10, 0];
+y12 = [185.752, 160.682, 147.118, 119.333, 102.053, 85.6822, 59.9127, 52.255, 46.1981, 45.8577];
+
+figure(2); hold on;
+plot(u_fit, y_fit, 'b-', 'LineWidth',2);
+plot(x1, y1, 'r-o', 'LineWidth',2);
+plot(x12, y12, 'r-o', 'LineWidth',2);
+title('Steady-State Characteristic of the System');
+xlabel('Mean Blower Power (u)');
+ylabel('Mean Ball Position (y)');
+legend('Linear Fit','Experimental Up','Experimental Down','Location','northwest');
+grid on; box on;
+
+%% new experimental data for identification
+new_data = load('New_data.mat');
+t_new = new_data.ic2data(:,1);
+u_new = new_data.ic2data(:,2);
+y_new = new_data.ic2data(:,3);
+step_input2 = timeseries(u_new,t_new);
+
+x_new = [785 3524 6794];
+means_new = zeros(length(x_new),1);
+means_new(1) = mean(y_new(1:x_new(1)));
+means_new(2) = mean(y_new(x_new(1)+1:x_new(2)));
+means_new(3) = mean(y_new(x_new(2)+1:x_new(3)));
+
+figure(1); hold on;
+start_index = 1;
+for i = 1:length(x_new)
+    end_index = x_new(i);
+    time_interval = t_new(start_index:end_index);
+    plot(time_interval, ones(size(time_interval))*means_new(i), 'k--','LineWidth',2);
+    start_index = end_index + 1;
+end
+plot(t_new, u_new, t_new, y_new);
+legend('Old Means','New Means','Blower Power','Ball Position');
+
+%% Nonlinear model (ODE) - MODEL 1
+m  = 1.0; b  = 1.3; g  = 9.81;
+u0 = 66; y0 = 148; ydot0 = 0;
+k = m * g * y0^2 / u0^2;
+
+% x1 = y => dx1/dt = x2
+% x2 = dy/dt => dx2/dt = (-m*g + k * u(t)^2/x1^2 - b*x2)/m
+f_nl = @(t,x,u) [x(2); (-m*g + k*(u(t))^2/(x(1)^2) - b*x(2))/m];
+
+u_step = u0 + 10;
+t_step = 1.0;
+u_fun = @(t) (t < t_step).*u0 + (t >= t_step).*u_step;
+
+odefun = @(t,x) f_nl(t,x,u_fun);
+x0 = [y0; ydot0];
+tspan = [0 150];
+
+[t_sim, x_sim] = ode45(odefun, tspan, x0);
+y_sim = x_sim(:,1);
+
+figure(3); plot(t_sim, y_sim, 'LineWidth',1.5);
+xlabel('Time (s)'); ylabel('Ball Position y');
+title('Nonlinear Model Response');
+grid on;
+
+FileName = 'nonlinear_model';
+Order = [1 1 2];
+Parameters = {m, b, k, g};
+InitialStates = [y0; ydot0];
+Ts = 0;
+sys_nonlinear = idnlgrey(FileName, Order, Parameters, InitialStates, Ts);
+
+%% Linearized Model - MODEL 2
+t_lin = linspace(t_new(1), t_new(end), length(t_new))';
+df2_dx1 = -2*k*u0^2/(y0^3)/m;
+df2_dx2 = -b/m;
+df2_du  = 2*k*u0/(y0^2)/m;
+
+A = [0 1; df2_dx1 df2_dx2];
+B = [0; df2_du];
+C = [1 0];
+D = 0;
+sys_linear = ss(A,B,C,D);
+
+uvec = arrayfun(@(t) u_fun(t)-u0, t_lin);
+x0_lin = [0;0];
+y_lin = lsim(sys_linear, uvec, t_lin, x0_lin) + y0;
+
+figure(4); hold on;
+plot(t_lin, y_lin, '--','LineWidth',1.5);
+plot(t_sim, y_sim, 'LineWidth',1.5);
+legend('Linearized','Nonlinearized');
+title('Linear vs Nonlinear Response');
+grid on;
+
+%% Sys identification - Model 3
+
+u1 = 55; u2_val = 79;
+y1 = 149.093; y2_val = 197.178;
+K = (y2_val - y1)/(u2_val - u1);
+y63 = y1 + 0.632*(y2_val - y1);
+t0 = 352.5; t63 = 355.1;
+tau = t63 - t0;
+Ts = t_new(2)-t_new(1);
+
+G3 = tf(K,[tau 1]);
+figure(5); step(G3); title('FOPDT Model Response'); grid on;
+
+t = t_new(3525:end)-352.4;
+y = y_new(3525:end)-149.093;
+u = u_new(3525:end) - 55;
+ident_data = iddata(y,u,Ts);
+figure(6);
+G4 = tfest(ident_data,2);
+compare(ident_data,G4);
+
+figure(7);
+plot(t,u,t,y)
+grid on;grid minor
+xlabel("time [s]");ylabel("u [V], y[mm]");
+xlim([0 100]);
+hold on;
+deltaU = 79-55;
+step(deltaU*G3);
+legend("input u", "output y", "step response delta*G3");
+%% ARX Identification - MOdel 4
+data_n = iddata(y_new(1480:6817), u_new(1480:6817), Ts);
+
+sys_arx  = arx(data_n,[2 2 1]);
+sys_nlarx = nlarx(data_n, [2 2 1], 'sigmoidnet');%for simulink 
+
+sys_nlarx 
+
+sys_armax = armax(data_n,[2 2 2 1]);
+sys_bj    = bj(data_n,[2 2 2 2 1]);
+
+Az = sys_arx.A;
+Bz = sys_arx.B;
+figure(8);
+compare(data_n, sys_arx, sys_armax, sys_bj);
+
+%% Compare all models
+figure(9);
+compare(data_n, sys_nonlinear, sys_linear, G3, sys_arx);
+legend('Experiment','Nonlinear','Linearized','FOSI','ARX'); %FOSI = first order sys identification
+
+%% Compare using lsim
+t_hat = t_new(1480:end)-148;
+u_hat = ones(size(t_hat));
+u_hat(1:2045,1)=0;
+delta_u = 24;
+figure;
+subplot(211);hold off;plot(t_hat,delta_u*u_hat,'r-','Linewidth',2);
+xlim([0,500]);grid on; grid minor;hold on;
+y_arx = lsim(sys_arx,24*u_hat,t_hat);
+y_armax = lsim(sys_armax,24*u_hat,t_hat);
+y_bj = lsim(sys_bj,24*u_hat,t_hat);
+subplot(212);
+xlim([0,500]);
+hold on; plot(t_hat,y_arx,'r--','LineWidth',2);
+grid on;grid minor; hold on;
+hold on; plot(t_hat,y_armax,'b-.','LineWidth',2);
+grid on;grid minor; hold on;
+hold on; plot(t_hat,y_bj,'c-','LineWidth',2);
+grid on;grid minor; hold on;
+y_real=y_new(1480:end)-141;
+hold on; plot(t_hat,y_real,'c-','LineWidth',2);
+grid on;grid minor; hold on;
+legend('ARX', 'ARMAX', 'BJ', 'Real');
